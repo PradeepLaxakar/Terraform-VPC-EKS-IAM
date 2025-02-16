@@ -1,0 +1,179 @@
+name: terraform plan
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  terraform-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+
+      - name: Terraform Init
+        run: terraform init -backend-config backend-prod.tfvars
+        working-directory: ./
+       
+      - name: Terraform Format
+        working-directory: ./
+        run: terraform fmt
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ./
+
+      - name: Terraform Plan
+        run: terraform plan --var-file=prod.tfvars -out=tfplan
+        working-directory: ./
+
+
+# manual intervention 1 -------------------------------------------------------------------
+
+  approve-terraform-apply:
+    needs: terraform-plan
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Manual Intervention
+      uses: trstringer/manual-approval@v1
+      with:
+        secret: ${{ secrets.MANUAL_APPROVAL_TOKEN }}
+        approvers: PradeepLaxakar
+        minimum-approvals: 1
+        issue-title: Terraform Apply
+        issue-body: To apply changes type - "approve", "yes" to accept or "deny", "no" to reject.
+
+
+# terraform apply -----------------------------------------------------------------------
+
+  terraform-apply:
+    needs: approve-terraform-apply
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: us-east-1
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v1
+
+    - name: Terraform Init
+      run: terraform init -backend-config backend-prod.tfvars
+      working-directory: ./
+       
+    - name: Terraform Format
+      working-directory: ./
+      run: terraform fmt
+
+    - name: Terraform Validate
+      run: terraform validate
+      working-directory: ./
+
+    - name: Terraform Plan
+      run: terraform plan --var-file=prod.tfvars -out=tfplan
+      working-directory: ./
+    
+    - name: Terraform Apply
+      run: terraform apply --auto-approve tfplan
+      working-directory: ./
+
+
+# manual intervention 2 -------------------------------------------------------------------
+
+  approve-script-run:
+    needs: terraform-apply
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Manual Intervention
+      uses: trstringer/manual-approval@v1
+      with:
+        secret: ${{ secrets.MANUAL_APPROVAL_TOKEN }}
+        approvers: PradeepLaxakar
+        minimum-approvals: 1
+        issue-title: Run Cert-Manager & NGINX-ingress script
+        issue-body: To apply changes type - "approve", "yes" to accept or "deny", "no" to reject.
+
+
+# ==================================== To run Cert-Manager & Nginx-Ingress Script ===============================================
+
+# This Script creats 1.Cert-manager, 2.Nginx-ingress and 3.Cluster-issuer in new Namespaces 
+
+  Cert-Manager_Nginx-Ingress: 
+    needs: approve-script-run
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set Execution Policy (Windows Only)
+        run: Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process
+        shell: pwsh
+        if: runner.os == 'Windows' 
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: us-east-1
+
+
+      - name: script
+        uses: Amadevus/pwsh-script@v2
+        id: my-script
+        with:
+          script: | 
+                  # Get EKS cluster credentials
+                  echo "Getting EKS cluster credentials..."
+                  aws eks update-kubeconfig --region us-east-1 --name Project-prod-cluster
+
+                  # Create namespaces
+                  echo "Creating namespaces..."
+                  kubectl create namespace cert-manager-tf
+                  kubectl create namespace nginx-ingress-tf
+
+                  # Add Helm repositories and update
+                  echo "Adding Helm repositories and updating..."
+                  helm repo add jetstack https://charts.jetstack.io
+                  helm repo update
+                  helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+                  helm repo update
+
+                  # Install NGINX Ingress Controller
+                  echo "Installing NGINX Ingress Controller..."
+                  helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx --version 4.5.0 --set controller.publishService.enabled=true --namespace nginx-ingress-tf
+
+                  # Install Cert-Manager
+                  echo "Installing Cert-Manager..."
+                  helm install cert-manager jetstack/cert-manager --namespace cert-manager-tf --version v1.10.1 --set installCRDs=true
+
+                  # Apply cluster issuer YAML
+                  echo "Applying cluster issuer YAML..."
+                  kubectl apply -f ./script/cluster-issuer.yml
+    
+      - run: echo "${{ steps.my-script.outputs.result }}"

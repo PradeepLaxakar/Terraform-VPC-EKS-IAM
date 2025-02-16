@@ -1,0 +1,149 @@
+name: stage
+
+on:
+  push:
+    branches:
+      - stage
+
+jobs:
+  terraform: 
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGE }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGE }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+
+      - name: Terraform Init
+        run:  terraform init -backend-config backend-stage.tfvars
+        working-directory: ./
+       
+      - name: Terraform Format
+        working-directory: ./
+        run: terraform fmt
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ./
+
+      - name: Terraform Plan
+        run: terraform plan --var-file=stage.tfvars -out=tfplan
+        working-directory: ./
+      
+      - name: Terraform Apply
+        run: terraform apply --auto-approve tfplan
+        working-directory: ./
+
+
+      - name: script3
+        uses: Amadevus/pwsh-script@v2
+        id: my-script
+        with:
+          script: | 
+                  # Get EKS cluster credentials
+                  echo "Getting EKS cluster credentials..."
+                  aws eks update-kubeconfig --region us-east-1 --name Project-stage-cluster
+
+                  # Create namespaces
+                  echo "Creating namespaces..."
+                  kubectl create namespace cert-manager-tf
+                  kubectl create namespace nginx-ingress-tf
+
+                  # Add Helm repositories and update
+                  echo "Adding Helm repositories and updating..."
+                  helm repo add jetstack https://charts.jetstack.io
+                  helm repo update
+                  helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+                  helm repo update
+
+                  # Install NGINX Ingress Controller
+                  echo "Installing NGINX Ingress Controller..."
+                  helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx --version 4.5.0 --set controller.publishService.enabled=true --namespace nginx-ingress-tf
+
+                  # Install Cert-Manager
+                  echo "Installing Cert-Manager..."
+                  helm install cert-manager jetstack/cert-manager --namespace cert-manager-tf --version v1.10.1 --set installCRDs=true
+
+                  # Apply cluster issuer YAML
+                  echo "Applying cluster issuer YAML..."
+                  kubectl apply -f ./script/cluster-issuer.yml
+    
+      - run: echo "${{ steps.my-script.outputs.result }}"
+
+# # Note:- To Destroy all Resources uncomment below code. #
+
+# #       # - name: Terraform Destroy
+# #       #   run: terraform destroy --var-file=stage.tfvars --auto-approve
+# #       #   working-directory: ./
+
+
+
+# ==================================== To run Cert-Manager & Nginx-Ingress Script ===============================================
+
+# This Script creats 1.Cert-manager, 2.Nginx-ingress and 3.Cluster-issuer in new Namespaces 
+
+  # script: 
+  #   runs-on: windows-latest
+  #   needs: terraform
+
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v2
+
+  #     - name: Set Execution Policy (Windows Only)
+  #       run: Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process
+  #       shell: pwsh
+  #       if: runner.os == 'Windows' 
+
+  #     - name: Configure AWS credentials
+  #       uses: aws-actions/configure-aws-credentials@v1
+  #       with:
+  #         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_STAGE }}
+  #         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_STAGE }}
+  #         aws-region: us-east-1
+
+
+  #     - name: script3
+  #       uses: Amadevus/pwsh-script@v2
+  #       id: my-script
+  #       with:
+  #         script: | 
+  #                 # Get EKS cluster credentials
+  #                 echo "Getting EKS cluster credentials..."
+  #                 aws eks update-kubeconfig --region us-east-1 --name Project-stage-cluster
+
+  #                 # Create namespaces
+  #                 echo "Creating namespaces..."
+  #                 kubectl create namespace cert-manager-tf
+  #                 kubectl create namespace nginx-ingress-tf
+
+  #                 # Add Helm repositories and update
+  #                 echo "Adding Helm repositories and updating..."
+  #                 helm repo add jetstack https://charts.jetstack.io
+  #                 helm repo update
+  #                 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+  #                 helm repo update
+
+  #                 # Install NGINX Ingress Controller
+  #                 echo "Installing NGINX Ingress Controller..."
+  #                 helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx --version 4.5.0 --set controller.publishService.enabled=true --namespace nginx-ingress-tf
+
+  #                 # Install Cert-Manager
+  #                 echo "Installing Cert-Manager..."
+  #                 helm install cert-manager jetstack/cert-manager --namespace cert-manager-tf --version v1.10.1 --set installCRDs=true
+
+  #                 # Apply cluster issuer YAML
+  #                 echo "Applying cluster issuer YAML..."
+  #                 kubectl apply -f ./script/cluster-issuer.yml
+    
+  #     - run: echo "${{ steps.my-script.outputs.result }}"
+
+

@@ -1,0 +1,9 @@
+# ------------------Commands -----------------------------------
+#Step 1 
+# terraform init -backend-config backend-<stage/prod>.tfvars
+
+#Step 2
+# terraform apply --var-file <stage/prod>.tfvars
+
+
+# to see iam-user-password > terraform output --raw iam-user-password
